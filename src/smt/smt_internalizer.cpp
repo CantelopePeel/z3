@@ -444,7 +444,7 @@ namespace smt {
         if (!gate_ctx) {
             mk_enode(n, true, true, false);
             set_enode_flag(v, true);
-            SASSERT(get_assignment(v) == l_undef);
+            SASSERT(get_assignment(v) == l_undef || get_assignment(l_def) != l_undef);
         }
     }
 
@@ -789,7 +789,7 @@ namespace smt {
                  false /* CC is not enabled */);
         internalize(c, true);
         internalize(t, false);
-        internalize(e, false);
+        internalize(e, false);        
         internalize(eq1, true);
         internalize(eq2, true);
         literal c_lit   = get_literal(c);
@@ -1195,7 +1195,7 @@ namespace smt {
         // Reason: when a learned clause becomes unit, it should mark the
         // unit literal as relevant. When binary_clause_opt is used,
         // it is not possible to distinguish between learned and non-learned clauses.
-        if (lemma && m_fparams.m_relevancy_lvl >= 2)
+        if (lemma && relevancy_lvl() >= 2)
             return false; 
         if (m_base_lvl > 0)
             return false;

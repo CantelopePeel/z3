@@ -29,6 +29,8 @@ Revision History:
 #include "sat/sat_unit_walk.h"
 #include "sat/sat_ddfw.h"
 #include "sat/sat_prob.h"
+#include "sat/sat_anf_simplifier.h"
+#include "sat/sat_aig_simplifier.h"
 #if defined(_MSC_VER) && !defined(_M_ARM) && !defined(_M_ARM64)
 # include <xmmintrin.h>
 #endif
@@ -65,6 +67,7 @@ namespace sat {
         m_asymm_branch(*this, p),
         m_probing(*this, p),
         m_mus(*this),
+        m_binspr(*this),
         m_inconsistent(false),
         m_searching(false),
         m_conflict(justification(0)),
@@ -161,7 +164,7 @@ namespace sat {
             m_phase[v] = src.m_phase[v];
             m_best_phase[v] = src.m_best_phase[v];
             m_prev_phase[v] = src.m_prev_phase[v];
-            
+
             // inherit activity:
             m_activity[v] = src.m_activity[v];
             m_case_split_queue.activity_changed_eh(v, false);
@@ -484,7 +487,7 @@ namespace sat {
         VERIFY(ENABLE_TERNARY);
         bool reinit = false;
         if (m_config.m_drat) m_drat.add(c, c.is_learned());
-        TRACE("sat", tout << c << "\n";);
+        TRACE("sat_verbose", tout << c << "\n";);
         SASSERT(!c.was_removed());
         m_watches[(~c[0]).index()].push_back(watched(c[1], c[2]));
         m_watches[(~c[1]).index()].push_back(watched(c[0], c[2]));
@@ -633,6 +636,7 @@ namespace sat {
     }
 
     void solver::defrag_clauses() {
+        m_defrag_threshold = 2;
         if (memory_pressure()) return;
         pop(scope_lvl());
         IF_VERBOSE(2, verbose_stream() << "(sat-defrag)\n");
@@ -1219,7 +1223,7 @@ namespace sat {
             init_assumptions(num_lits, lits);
             propagate(false);
             if (check_inconsistent()) return l_false;
-            do_cleanup(m_config.m_force_cleanup);
+            if (m_config.m_force_cleanup) do_cleanup(true);
 
             if (m_config.m_unit_walk) {
                 return do_unit_walk();
@@ -1248,7 +1252,7 @@ namespace sat {
                 bool should_try_decide = false;
                 if (inconsistent()) is_sat = resolve_conflict_core();
                 else if (should_propagate()) propagate(true);
-                else if (do_cleanup(false)) continue;
+                else if (m_conflicts_since_init > 0 && do_cleanup(false)) continue;
                 else if (should_gc()) do_gc();
                 else if (should_rephase()) do_rephase();
                 else if (should_reorder()) do_reorder();
@@ -1765,12 +1769,6 @@ namespace sat {
     }    
 
 
-    struct clause_size_lt {
-        bool operator()(clause const * c1, clause const * c2) const {
-            return c1->size() < c2->size();
-        }
-    };
-
     void solver::init_assumptions(unsigned num_lits, literal const* lits) {
         if (num_lits == 0 && m_user_scope_literals.empty()) {
             return;
@@ -2013,18 +2011,22 @@ namespace sat {
             }
         }
 
-#if 0
-        static unsigned file_no = 0;
-        #pragma omp critical (print_sat)
-        {
-            ++file_no;
-            std::ostringstream ostrm;
-            ostrm << "s" << file_no << ".txt";
-            std::ofstream ous(ostrm.str());
-            display(ous);
+        if (m_config.m_binspr && !inconsistent()) {
+            m_binspr();
         }
-#endif
 
+        if (m_config.m_anf_simplify && m_simplifications > m_config.m_anf_delay && !inconsistent()) {
+            anf_simplifier anf(*this);
+            anf_simplifier::config cfg;
+            cfg.m_enable_exlin = m_config.m_anf_exlin;
+            anf();
+            anf.collect_statistics(m_aux_stats);
+            // TBD: throttle anf_delay based on yield
+        }
+
+        if (m_aig_simplifier && m_simplifications > m_config.m_aig_delay && !inconsistent()) {
+            (*m_aig_simplifier)();
+        }
     }
 
     bool solver::set_root(literal l, literal r) {
@@ -3853,6 +3855,7 @@ namespace sat {
         bool_var new_v = mk_var(true, false);
         lit = literal(new_v, false);
         m_user_scope_literals.push_back(lit);
+        m_aig_simplifier = nullptr; // for simplicity, wipe it out
         TRACE("sat", tout << "user_push: " << lit << "\n";);
     }
 
@@ -4004,6 +4007,10 @@ namespace sat {
         m_fast_glue_backup.set_alpha(m_config.m_fast_glue_avg);
         m_slow_glue_backup.set_alpha(m_config.m_slow_glue_avg);
         m_trail_avg.set_alpha(m_config.m_slow_glue_avg);
+
+        if (m_config.m_aig_simplify && !m_aig_simplifier && m_user_scope_literals.empty()) {
+            m_aig_simplifier = alloc(aig_simplifier, *this);
+        }
     }
 
     void solver::collect_param_descrs(param_descrs & d) {
@@ -4023,6 +4030,7 @@ namespace sat {
         m_probing.collect_statistics(st);
         if (m_ext) m_ext->collect_statistics(st);
         if (m_local_search) m_local_search->collect_statistics(st);
+        if (m_aig_simplifier) m_aig_simplifier->collect_statistics(st);
         st.copy(m_aux_stats);
     }
 
@@ -5075,5 +5083,43 @@ namespace sat {
         stat.display(out);
         return out;
     }
+
+    bool solver::all_distinct(literal_vector const& lits) {
+        init_visited();
+        for (literal l : lits) {
+            if (is_visited(l.var())) {
+                return false;
+            }
+            mark_visited(l.var());
+        }
+        return true;
+    }
+
+    bool solver::all_distinct(clause const& c) {
+        init_visited();
+        for (literal l : c) {
+            if (is_visited(l.var())) {
+                return false;
+            }
+            mark_visited(l.var());
+        }
+        return true;
+    }
+
+    void solver::init_visited() {
+        if (m_visited.empty()) {
+            m_visited_ts = 0;
+        }
+        m_visited_ts++;
+        if (m_visited_ts == 0) {
+            m_visited_ts = 1;
+            m_visited.reset();
+        }
+        while (m_visited.size() < 2*num_vars()) {
+            m_visited.push_back(0);
+        }
+    }
+
+
 
 };

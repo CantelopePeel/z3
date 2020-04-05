@@ -69,6 +69,7 @@ namespace smt {
     class context {
         friend class model_generator;
         friend class lookahead;
+        friend class parallel;
     public:
         statistics                  m_stats;
 
@@ -82,7 +83,9 @@ namespace smt {
         ast_manager &               m;
         smt_params &                m_fparams;
         params_ref                  m_params;
+        ::statistics                m_aux_stats;
         setup                       m_setup;
+        unsigned                    m_relevancy_lvl;
         timer                       m_timer;
         asserted_formulas           m_asserted_formulas;
         th_rewriter                 m_rewriter;
@@ -109,6 +112,8 @@ namespace smt {
         unsigned                    m_final_check_idx; // circular counter used for implementing fairness
 
         bool                        m_is_auxiliary; // used to prevent unwanted information from being logged.
+        class parallel*             m_par;
+        unsigned                    m_par_index;
 
         // -----------------------------------
         //
@@ -187,7 +192,9 @@ namespace smt {
 
         // A conflict is usually a single justification. That is, a justification
         // for false. If m_not_l is not null_literal, then m_conflict is a
-        // justification for l, and the conflict is union of m_no_l and m_conflict;
+        // justification for l, and the conflict is union of m_not_l and m_conflict;
+        // m_empty_clause is set to ensure that an empty clause generated in deep scope 
+        // levels survives to the base level.
         b_justification             m_conflict;
         literal                     m_not_l;
         scoped_ptr<conflict_resolution> m_conflict_resolution;
@@ -196,8 +203,8 @@ namespace smt {
 
         literal_vector              m_atom_propagation_queue;
 
-        obj_map<expr, unsigned>      m_cached_generation;
-        obj_hashtable<expr>          m_cache_generation_visited;
+        obj_map<expr, unsigned>     m_cached_generation;
+        obj_hashtable<expr>         m_cache_generation_visited;
         dyn_ack_manager             m_dyn_ack_manager;
 
         // -----------------------------------
@@ -280,8 +287,10 @@ namespace smt {
         }
 
         bool relevancy() const {
-            return m_fparams.m_relevancy_lvl > 0;
+            return relevancy_lvl() > 0;
         }
+
+        unsigned relevancy_lvl() const;
 
         enode * get_enode(expr const * n) const {
             SASSERT(e_internalized(n));
@@ -404,25 +413,17 @@ namespace smt {
             return js.get_kind() == b_justification::JUSTIFICATION && js.get_justification()->get_from_theory() == th_id;
         }
 
-        int get_random_value() {
-            return m_random();
-        }
+        void set_random_seed(unsigned s) { m_random.set_seed(s); }
 
-        bool is_searching() const {
-            return m_searching;
-        }
+        int get_random_value() { return m_random(); }
 
-        svector<double> const & get_activity_vector() const {
-            return m_activity;
-        }
+        bool is_searching() const { return m_searching; }
 
-        double get_activity(bool_var v) const {
-            return m_activity[v];
-        }
+        svector<double> const & get_activity_vector() const { return m_activity; }
 
-        void set_activity(bool_var v, double act) {
-            m_activity[v] = act;
-        }
+        double get_activity(bool_var v) const { return m_activity[v]; }
+
+        void set_activity(bool_var v, double act) { m_activity[v] = act; }
 
         void activity_changed(bool_var v, bool increased) {
             if (increased) {
@@ -1315,7 +1316,11 @@ namespace smt {
 
         std::ostream& display_literal_smt2(std::ostream& out, literal lit) const;
 
+        std::ostream& display_literals_smt2(std::ostream& out, literal l1, literal l2) const { literal ls[2] = { l1, l2 }; return display_literals_smt2(out, 2, ls); }
+
         std::ostream& display_literals_smt2(std::ostream& out, unsigned num_lits, literal const* lits) const;
+
+        std::ostream& display_literals_smt2(std::ostream& out, literal_vector const& ls) const { return display_literals_smt2(out, ls.size(), ls.c_ptr()); }
 
         std::ostream& display_literal_verbose(std::ostream & out, literal lit) const;
 
@@ -1595,8 +1600,6 @@ namespace smt {
                 m_case_split_queue->internalize_instance_eh(body, generation);
         }
 
-        bool already_internalized() const { return m_e_internalized_stack.size() > 2 || m_b_internalized_stack.size() > 1; }
-
         unsigned get_unsat_core_size() const {
             return m_unsat_core.size();
         }
@@ -1604,6 +1607,8 @@ namespace smt {
         expr * get_unsat_core_expr(unsigned idx) const {
             return m_unsat_core.get(idx);
         }
+
+        expr_ref_vector const& unsat_core() const { return m_unsat_core; }
 
         void get_levels(ptr_vector<expr> const& vars, unsigned_vector& depth);
 

@@ -36,9 +36,7 @@ endforeach()
 # that has not yet been declared.
 add_subdirectory(util)
 add_subdirectory(math/polynomial)
-add_subdirectory(sat)
-add_subdirectory(nlsat)
-add_subdirectory(util/lp)
+add_subdirectory(math/dd)
 add_subdirectory(math/hilbert)
 add_subdirectory(math/simplex)
 add_subdirectory(math/automata)
@@ -53,6 +51,9 @@ add_subdirectory(tactic)
 add_subdirectory(ast/substitution)
 add_subdirectory(parsers/util)
 add_subdirectory(math/grobner)
+add_subdirectory(sat)
+add_subdirectory(nlsat)
+add_subdirectory(math/lp)
 add_subdirectory(math/euclid)
 add_subdirectory(tactic/core)
 add_subdirectory(math/subpaving/tactic)
@@ -96,7 +97,6 @@ add_subdirectory(tactic/portfolio)
 add_subdirectory(opt)
 add_subdirectory(api)
 add_subdirectory(api/dll)
-
 ################################################################################
 # libz3
 ################################################################################
@@ -209,12 +209,26 @@ endif()
 ################################################################################
 # Z3 executable
 ################################################################################
-add_subdirectory(shell)
+cmake_dependent_option(Z3_BUILD_EXECUTABLE
+    "Build the z3 executable" ON
+    "CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR" OFF)
+
+if (Z3_BUILD_EXECUTABLE)
+    add_subdirectory(shell)
+endif()
 
 ################################################################################
 # z3-test
 ################################################################################
-add_subdirectory(test)
+
+cmake_dependent_option(Z3_BUILD_TEST_EXECUTABLES
+    "Build test executables" ON
+    "CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR" OFF)
+
+
+if (Z3_BUILD_TEST_EXECUTABLES)
+    add_subdirectory(test)
+endif()
 
 
 ################################################################################

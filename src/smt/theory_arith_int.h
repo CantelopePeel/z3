@@ -102,10 +102,8 @@ namespace smt {
         numeral new_range;
         numeral small_range_thresold(1024);
         unsigned n = 0;
-        typename vector<row>::const_iterator it  = m_rows.begin();
-        typename vector<row>::const_iterator end = m_rows.end();
-        for (; it != end; ++it) {
-            theory_var v = it->get_base_var();
+        for (row const& row : m_rows) {
+            theory_var v = row.get_base_var();
             if (v == null_theory_var)
                 continue;
             if (!is_base(v))
@@ -120,26 +118,19 @@ namespace smt {
             numeral const & u = upper_bound(v).get_rational();
             new_range  = u;
             new_range -= l;
-            if (new_range > small_range_thresold) 
-                continue;
-            if (result == null_theory_var) {
+            if (new_range > small_range_thresold) {
+                //
+            }
+            else if (result == null_theory_var || new_range < range) {
                 result = v;
                 range  = new_range;
                 n      = 1;
-                continue;
             }
-            if (new_range < range) {
-                n      = 1;
-                result = v;
-                range  = new_range;
-                continue;
-            }
-            if (new_range == range) {
+            else if (new_range == range) {
                 n++;
                 if (m_random() % n == 0) {
                     result = v;
                     range  = new_range;
-                    continue;
                 }
             }
         }
@@ -166,25 +157,41 @@ namespace smt {
         
 #define SELECT_VAR(VAR) if (r == null_theory_var) { n = 1; r = VAR; } else { n++; SASSERT(n >= 2); if (m_random() % n == 0) r = VAR; }
 
-        typename vector<row>::const_iterator it  = m_rows.begin();
-        typename vector<row>::const_iterator end = m_rows.end();
-        for (; it != end; ++it) {
-            theory_var v = it->get_base_var();
-            if (v != null_theory_var && is_base(v) && is_int(v) && !get_value(v).is_int()) {
-                SELECT_VAR(v);
+        numeral small_value(1024);
+        if (r == null_theory_var) {
+            for (auto const& row : m_rows) {
+                theory_var v = row.get_base_var();
+                if (v != null_theory_var && is_base(v) && is_int(v) && !get_value(v).is_int()) {
+                    if (abs(get_value(v)) < small_value) {
+                        SELECT_VAR(v);
+                    }
+                    else if (upper(v) && small_value > upper_bound(v) - get_value(v)) {
+                        SELECT_VAR(v);
+                    }
+                    else if (lower(v) && small_value > get_value(v) - lower_bound(v)) {
+                        SELECT_VAR(v);
+                    }
+                }
             }
         }
+
         if (r == null_theory_var) {
-            it  = m_rows.begin();
-            for (; it != end; ++it) {
-                theory_var v = it->get_base_var();
+            for (auto const& row : m_rows) {
+                theory_var v = row.get_base_var();
+                if (v != null_theory_var && is_base(v) && is_int(v) && !get_value(v).is_int()) {
+                    SELECT_VAR(v);
+                }
+            }
+        }
+
+        if (r == null_theory_var) {
+            for (auto const& row : m_rows) {
+                theory_var v = row.get_base_var();
                 if (v != null_theory_var && is_quasi_base(v) && is_int(v) && !get_value(v).is_int()) {
                     quasi_base_row2base_row(get_var_row(v));
                     SELECT_VAR(v);
                 }
             }
-            if (r == null_theory_var)
-                return null_theory_var;
         }
         CASSERT("arith", wf_rows());
         CASSERT("arith", wf_columns());
@@ -667,11 +674,18 @@ namespace smt {
         l = ctx.get_literal(bound);
         ctx.mark_as_relevant(l);
         dump_lemmas(l, ante);
-        ctx.assign(l, ctx.mk_justification(
-                       gomory_cut_justification(
-                           get_id(), ctx.get_region(), 
-                           ante.lits().size(), ante.lits().c_ptr(), 
-                           ante.eqs().size(), ante.eqs().c_ptr(), ante, l)));
+        auto js = ctx.mk_justification(
+            gomory_cut_justification(
+                get_id(), ctx.get_region(),
+                ante.lits().size(), ante.lits().c_ptr(),
+                ante.eqs().size(), ante.eqs().c_ptr(), ante, l));
+
+        if (l == false_literal) {
+            ctx.mk_clause(0, nullptr, js, CLS_TH_LEMMA, nullptr);
+        }
+        else {
+            ctx.assign(l, js);
+        }
         return true;
     }
     
@@ -1427,6 +1441,7 @@ namespace smt {
         }
         else {
             if (m_params.m_arith_int_eq_branching && branch_infeasible_int_equality()) {
+                ++m_stats.m_branch_infeasible_int;
                 return FC_CONTINUE;
             }
 
@@ -1435,6 +1450,7 @@ namespace smt {
                 TRACE("arith_int", tout << "v" << int_var << " does not have an integer assignment: " << get_value(int_var) << "\n";);
                 // apply branching 
                 branch_infeasible_int_var(int_var);
+                ++m_stats.m_branch_infeasible_var;
                 return FC_CONTINUE;
             }
         }

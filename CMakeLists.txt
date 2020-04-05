@@ -11,7 +11,7 @@ if (POLICY CMP0042)
 endif()
 
 set(CMAKE_USER_MAKE_RULES_OVERRIDE_CXX "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cxx_compiler_flags_overrides.cmake")
-project(Z3 VERSION 4.8.7.0 LANGUAGES CXX)
+project(Z3 VERSION 4.8.8.0 LANGUAGES CXX)
 
 ################################################################################
 # Project version
@@ -114,6 +114,7 @@ endif()
 # Useful CMake functions/Macros
 ################################################################################
 include(CheckCXXSourceCompiles)
+include(CMakeDependentOption)
 
 ################################################################################
 # Compiler flags for Z3 components.
@@ -273,11 +274,11 @@ endif()
 ################################################################################
 # Thread safe or not?
 ################################################################################
-option(SINGLE_THREADED
+option(Z3_SINGLE_THREADED
   "Non-thread-safe build"
   OFF
 )
-if (SINGLE_THREADED)
+if (Z3_SINGLE_THREADED)
   list(APPEND Z3_COMPONENT_CXX_DEFINES "-DSINGLE_THREAD")
   message(STATUS "Non-thread-safe build")
 else()
@@ -325,9 +326,9 @@ include(${PROJECT_SOURCE_DIR}/cmake/compiler_warnings.cmake)
 ################################################################################
 # Save Clang optimization records
 ################################################################################
-option(SAVE_CLANG_OPTIMIZATION_RECORDS "Enable saving Clang optimization records." OFF)
+option(Z3_SAVE_CLANG_OPTIMIZATION_RECORDS "Enable saving Clang optimization records." OFF)
 
-if (SAVE_CLANG_OPTIMIZATION_RECORDS)
+if (Z3_SAVE_CLANG_OPTIMIZATION_RECORDS)
   z3_add_cxx_flag("-fsave-optimization-record" REQUIRED)
 endif()
 
@@ -613,7 +614,9 @@ install(
 ################################################################################
 # Examples
 ################################################################################
-option(Z3_ENABLE_EXAMPLE_TARGETS "Build Z3 api examples" ON)
+cmake_dependent_option(Z3_ENABLE_EXAMPLE_TARGETS 
+    "Build Z3 api examples" ON
+    "CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR" OFF)
 if (Z3_ENABLE_EXAMPLE_TARGETS)
   add_subdirectory(examples)
 endif()

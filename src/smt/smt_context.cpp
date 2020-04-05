@@ -38,6 +38,7 @@ Revision History:
 #include "smt/smt_model_generator.h"
 #include "smt/smt_model_checker.h"
 #include "smt/smt_model_finder.h"
+#include "smt/smt_parallel.h"
 
 namespace smt {
 
@@ -46,6 +47,7 @@ namespace smt {
         m_fparams(p),
         m_params(_p),
         m_setup(*this, p),
+        m_relevancy_lvl(p.m_relevancy_lvl),
         m_asserted_formulas(m, p, _p),
         m_rewriter(m),
         m_qmanager(alloc(quantifier_manager, *this, p, _p)),
@@ -62,6 +64,8 @@ namespace smt {
         m_e_internalized_stack(m),
         m_final_check_idx(0),
         m_is_auxiliary(false),
+        m_par(nullptr),
+        m_par_index(0),
         m_cg_table(m),
         m_is_diseq_tmp(nullptr),
         m_units_to_reassert(m),
@@ -145,6 +149,10 @@ namespace smt {
     void context::updt_params(params_ref const& p) {
         m_params.append(p);
         m_asserted_formulas.updt_params(p);
+    }
+
+    unsigned context::relevancy_lvl() const {
+        return std::min(m_relevancy_lvl, m_fparams.m_relevancy_lvl);
     }
 
     void context::copy(context& src_ctx, context& dst_ctx) {
@@ -302,7 +310,7 @@ namespace smt {
 
     void context::assign_core(literal l, b_justification j, bool decision) {
         TRACE("assign_core", tout << (decision?"decision: ":"propagating: ") << l << " ";
-              display_literal_verbose(tout, l); tout << " level: " << m_scope_lvl << "\n";
+              display_literal_smt2(tout, l); tout << " level: " << m_scope_lvl << "\n";
               display(tout, j););
         m_assigned_literals.push_back(l);
         m_assignment[l.index()]    = l_true;
@@ -320,8 +328,8 @@ namespace smt {
         TRACE("phase_selection", tout << "saving phase, is_pos: " << d.m_phase << " l: " << l << "\n";);
 
         TRACE("relevancy",
-              tout << "is_atom: " << d.is_atom() << " is relevant: " << is_relevant_core(l) << "\n";);
-        if (d.is_atom() && (m_fparams.m_relevancy_lvl == 0 || (m_fparams.m_relevancy_lvl == 1 && !d.is_quantifier()) || is_relevant_core(l)))
+              tout << "is_atom: " << d.is_atom() << " is relevant: " << is_relevant_core(l) << " relevancy-lvl: " << relevancy_lvl() << "\n";);
+        if (d.is_atom() && (relevancy_lvl() == 0 || (relevancy_lvl() == 1 && !d.is_quantifier()) || is_relevant_core(l)))
             m_atom_propagation_queue.push_back(l);
 
         if (m.has_trace_stream())
@@ -512,6 +520,7 @@ namespace smt {
             m_stats.m_num_add_eq++;
             enode * r1 = n1->get_root();
             enode * r2 = n2->get_root();
+
 
             if (r1 == r2) {
                 TRACE("add_eq", tout << "redundant constraint.\n";);
@@ -1581,8 +1590,8 @@ namespace smt {
             bool_var_data & d = get_bdata(v);
             SASSERT(relevancy());
             // Quantifiers are only asserted when marked as relevant.
-            // Other atoms are only asserted when marked as relevant if m_relevancy_lvl >= 2
-            if (d.is_atom() && (d.is_quantifier() || m_fparams.m_relevancy_lvl >= 2)) {
+            // Other atoms are only asserted when marked as relevant if relevancy_lvl >= 2
+            if (d.is_atom() && (d.is_quantifier() || relevancy_lvl() >= 2)) {
                 lbool val  = get_assignment(v);
                 if (val != l_undef)
                     m_atom_propagation_queue.push_back(literal(v, val == l_false));
@@ -1841,15 +1850,24 @@ namespace smt {
             else {
                 switch (m_fparams.m_phase_selection) {
                 case PS_THEORY: 
-                    if (d.is_theory_atom()) {
+                    if (m_phase_cache_on && d.m_phase_available) {
+                        is_pos = m_bdata[var].m_phase;
+                    }
+                    else if (!m_phase_cache_on && d.is_theory_atom()) {
                         theory * th = m_theories.get_plugin(d.get_theory());
                         lbool ph = th->get_phase(var);
                         if (ph != l_undef) {
                             is_pos = ph == l_true;
-                            break;
+                        }
+                        else {
+                            is_pos = m_phase_default;
                         }
                     }
-                    Z3_fallthrough;
+                    else {
+                        TRACE("phase_selection", tout << "setting to false\n";);
+                        is_pos = m_phase_default;
+                    }
+                    break;
                 case PS_CACHING:
                 case PS_CACHING_CONSERVATIVE:
                 case PS_CACHING_CONSERVATIVE2:
@@ -2815,14 +2833,15 @@ namespace smt {
     /**
        \brief Auxiliary method for #already_internalized_theory.
     */
-    bool context::already_internalized_theory_core(theory * th, expr_ref_vector const & s) const {
+    bool context::already_internalized_theory_core(theory * th, expr_ref_vector const & s) const {        
         expr_mark visited;
         family_id fid = th->get_id();
         unsigned sz = s.size();
         for (unsigned i = 0; i < sz; i++) {
             expr * n = s.get(i);
-            if (uses_theory(n, fid, visited))
+            if (uses_theory(n, fid, visited)) {
                 return true;
+            }
         }
         return false;
     }
@@ -2833,6 +2852,7 @@ namespace smt {
             dealloc(th);
             return; // context already has a theory for the given family id.
         }
+        TRACE("internalize", tout << this << " " << th->get_family_id() << "\n";);
         SASSERT(std::find(m_theory_set.begin(), m_theory_set.end(), th) == m_theory_set.end());
         SASSERT(!already_internalized_theory(th));
         th->init(this);
@@ -3368,6 +3388,11 @@ namespace smt {
         SASSERT(!m_setup.already_configured());
         setup_context(m_fparams.m_auto_config);
 
+        if (m_fparams.m_threads > 1) {
+            parallel p(*this);
+            expr_ref_vector asms(m);
+            return p(asms);
+        }
 
         internalize_assertions();
         expr_ref_vector theory_assumptions(m);
@@ -3391,9 +3416,12 @@ namespace smt {
     }
 
     void context::setup_context(bool use_static_features) {
-        if (m_setup.already_configured() || inconsistent())
+        if (m_setup.already_configured() || inconsistent()) {
+            m_relevancy_lvl = std::min(m_fparams.m_relevancy_lvl, m_relevancy_lvl);
             return;
+        }
         m_setup(get_config_mode(use_static_features));
+        m_relevancy_lvl = m_fparams.m_relevancy_lvl;
         setup_components();
     }
 
@@ -3421,6 +3449,11 @@ namespace smt {
         if (!check_preamble(reset_cancel)) return l_undef;
         SASSERT(at_base_level());
         setup_context(false);
+        if (m_fparams.m_threads > 1) {            
+            expr_ref_vector asms(m, num_assumptions, assumptions);
+            parallel p(*this);
+            return p(asms);
+        }
         lbool r;
         do {
             pop_to_base_lvl();
@@ -3925,7 +3958,7 @@ namespace smt {
                   for (unsigned i = 0; i < num_lits; i++) {
                       literal l = lits[i];
                       tout << l << " ";
-                      display_literal(tout, l);
+                      display_literal_smt2(tout, l);
                       tout << ", ilvl: " << get_intern_level(l.var()) << "\n"
                            << mk_pp(bool_var2expr(l.var()), m) << "\n";
                   });
@@ -4304,9 +4337,12 @@ namespace smt {
             theory_id th_id     = l->get_th_id();
 
             for (enode * parent : enode::parents(n)) {
-                family_id fid = parent->get_owner()->get_family_id();
+                app* p = parent->get_owner();
+                family_id fid = p->get_family_id();
                 if (fid != th_id && fid != m.get_basic_family_id()) {
-                    TRACE("is_shared", tout << enode_pp(n, *this) << "\nis shared because of:\n" << enode_pp(parent, *this) << "\n";);
+                    TRACE("is_shared", tout << enode_pp(n, *this) 
+                          << "\nis shared because of:\n" 
+                          << enode_pp(parent, *this) << "\n";);
                     return true;
                 }
             }
