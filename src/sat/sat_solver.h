@@ -46,8 +46,11 @@ Revision History:
 #include "util/rlimit.h"
 #include "util/scoped_ptr_vector.h"
 
-namespace sat {
+extern "C" bool (*quantum_solver_check_capable_callback) (unsigned num_vars, unsigned num_clauses);
+extern "C" const char* (*quantum_solver_run_callback) (const char* solver_state);
 
+
+namespace sat {
     /**
        \brief Main statistic counters.
     */
@@ -490,6 +493,9 @@ namespace sat {
         lbool invoke_local_search(unsigned num_lits, literal const* lits);
         lbool do_unit_walk();
 
+        int count_vars_eliminated() const;
+        bool should_call_quantum_solver(int num_elim);
+        bool do_call_quantum_solver();
         // -----------------------
         //
         // GC
@@ -722,6 +728,8 @@ namespace sat {
         void display_watches(std::ostream & out) const;
         void display_watches(std::ostream & out, literal lit) const;
         void display_dimacs(std::ostream & out) const override;
+        void display_dimacs_for_quantum_solver(std::ostream & out) const;
+
         std::ostream& display_model(std::ostream& out) const;
         void display_wcnf(std::ostream & out, unsigned sz, literal const* lits, unsigned const* weights) const;
         void display_assignment(std::ostream & out) const;

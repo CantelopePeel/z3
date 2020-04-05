@@ -337,6 +337,18 @@ def Z3_set_error_handler(ctx, hndlr, _elems=Elementaries(_lib.Z3_set_error_handl
   _elems.Check(ctx)
   return ceh
 
+def Z3_set_quantum_solver_check_capable_callback(callback, _elems=Elementaries(_lib.Z3_set_quantum_solver_check_capable_callback)):
+  cqsccc = _quantum_solver_check_callback_type(callback)
+  _elems.f(cqsccc)
+  #_elems.Check(ctx)
+  return cqsccc
+
+def Z3_set_quantum_solver_run_callback(callback, _elems=Elementaries(_lib.Z3_set_quantum_solver_run_callback)):
+  cqsrc = _quantum_solver_run_callback_type(callback)
+  _elems.f(cqsrc)
+  #_elems.Check(ctx)
+  return cqsrc
+
 """)
 
     for sig in _API2PY:
@@ -1816,6 +1828,14 @@ _error_handler_type  = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint)
 
 _lib.Z3_set_error_handler.restype  = None
 _lib.Z3_set_error_handler.argtypes = [ContextObj, _error_handler_type]
+
+_quantum_solver_check_callback_type = ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_uint, ctypes.c_uint)
+_lib.Z3_set_quantum_solver_check_capable_callback.restype  = None
+_lib.Z3_set_quantum_solver_check_capable_callback.argtypes = [_quantum_solver_check_callback_type]
+
+_quantum_solver_run_callback_type = ctypes.CFUNCTYPE(ctypes.c_char_p, ctypes.c_char_p)
+_lib.Z3_set_quantum_solver_run_callback.restype  = None
+_lib.Z3_set_quantum_solver_run_callback.argtypes = [_quantum_solver_run_callback_type]
 
 """
   )

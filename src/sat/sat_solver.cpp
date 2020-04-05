@@ -17,7 +17,6 @@ Revision History:
 
 --*/
 
-
 #include <cmath>
 #include <thread>
 #include "util/luby.h"
@@ -36,10 +35,23 @@ Revision History:
 
 #define ENABLE_TERNARY true
 
+bool default_quantum_solver_check_capable_callback(unsigned num_vars, unsigned num_clauses) {
+    TRACE("qq", tout << "Default solver check callback installed!" << "\n";);
+    return false;
+}
+
+bool (*quantum_solver_check_capable_callback) (unsigned num_vars, unsigned num_clauses) =
+        default_quantum_solver_check_capable_callback;
+
+const char* default_quantum_solver_run_callback(const char* solver_state) {
+    TRACE("qq", tout << "Default solver run callback installed!" << "\n";);
+    return "none";
+}
+
+const char* (*quantum_solver_run_callback) (const char* solver_state) =
+    default_quantum_solver_run_callback;
 
 namespace sat {
-
-
     solver::solver(params_ref const & p, reslimit& l):
         solver_core(l),
         m_checkpoint_enabled(true),
@@ -1165,7 +1177,6 @@ namespace sat {
         return result;
     }
 
-
     // -----------------------
     //
     // Search
@@ -1229,8 +1240,12 @@ namespace sat {
                 m_conflicts_since_restart = 0;
                 m_restart_threshold = m_config.m_restart_initial;
             }
+            int num_elim = count_vars_eliminated();
             lbool is_sat = l_undef;
             while (is_sat == l_undef && !should_cancel()) {
+                TRACE("qq", tout << "BEEP"; tout.flush(););
+
+                bool should_try_decide = false;
                 if (inconsistent()) is_sat = resolve_conflict_core();
                 else if (should_propagate()) propagate(true);
                 else if (do_cleanup(false)) continue;
@@ -1238,9 +1253,21 @@ namespace sat {
                 else if (should_rephase()) do_rephase();
                 else if (should_reorder()) do_reorder();
                 else if (should_restart()) do_restart(!m_config.m_restart_fast);
-                else if (should_simplify()) do_simplify();
-                else if (!decide()) is_sat = final_check();
+                else if (should_simplify()) {
+                    do_simplify();
+                    num_elim = count_vars_eliminated();
+                }
+                else if (should_call_quantum_solver(num_elim)) {
+                    should_try_decide = !do_call_quantum_solver();
+                } else should_try_decide = true;
+
+                if (should_try_decide) {
+                    if (!decide()) {
+                        is_sat = final_check();
+                    }
+                }
             }
+
             return is_sat;
         }
         catch (const abort_solver &) {
@@ -1248,6 +1275,71 @@ namespace sat {
             IF_VERBOSE(SAT_VB_LVL, verbose_stream() << "(sat \"abort giveup\")\n";);
             return l_undef;
         }
+    }
+
+    int solver::count_vars_eliminated() const {
+        int num_elim = 0;
+        for (bool_var v = 0; v < num_vars(); v++) {
+            if (m_eliminated[v]) {
+                num_elim++;
+            }
+        }
+        return num_elim;
+    }
+
+
+    bool solver::should_call_quantum_solver(int num_elim) {
+        TRACE("qq", tout << "BOOP\n"; tout.flush(););
+
+        unsigned num_remaining_vars = num_vars() - m_trail.size() - num_elim;
+//        TRACE("qq", tout << "Num vars: " << num_vars() << " " << m_trail.size() << " " << num_elim << "\n";);
+
+//        unsigned num_remaining_clauses = num_clauses() - m_trail.size();
+        unsigned num_remaining_clauses = m_clauses.size();
+        bool check = quantum_solver_check_capable_callback(num_remaining_vars, num_remaining_clauses);
+        return check;
+    }
+
+    bool solver::do_call_quantum_solver() {
+
+        std::stringstream in_strm;
+        display_dimacs_for_quantum_solver(in_strm);
+        const std::string str = in_strm.str();
+        const char* raw_str = str.c_str();
+        const std::string output_str(quantum_solver_run_callback(raw_str));
+        TRACE("qq", tout << output_str; tout.flush(););
+
+//        unsigned num_elim = 0;
+//        for (bool_var v = 0; v < num_vars(); v++) {
+//            if (m_eliminated[v]) {
+//                //TRACE("qq", tout << "Elim just: " << v << " " << m_justification[v] << "\n";);
+//                num_elim++;
+//            }
+//        }
+        unsigned num_remaining_vars = num_vars() - m_trail.size();
+//        TRACE("qq", tout << "Num vars: " << num_vars() << " " << m_trail.size() << " " << num_elim << "\n";);
+
+        if (output_str == "none") {
+            return false;
+        }
+
+        std::stringstream out_strm(output_str);
+
+        while (true) {
+            int n;
+            out_strm >> n;
+            if (!out_strm)
+                break;
+
+            int var_n = (n > 0 ? n : -n) - 1;
+            int sign_n = n > 0 ? 0 : 1;
+            unsigned lit_val = (var_n * 2) + sign_n;
+            literal lit = to_literal(lit_val);
+
+            TRACE("qq_sat_assign", tout << lit << " previous value: " << value(lit) << "\n";);
+            assign(lit, justification(scope_lvl()));
+        }
+        return true;
     }
 
     bool solver::should_cancel() {
@@ -4153,6 +4245,62 @@ namespace sat {
                 out << "0\n";
             }
         }
+    }
+
+    void solver::display_dimacs_for_quantum_solver(std::ostream & out) const {
+        out << "p cnf " << num_vars() << " " << num_clauses() << "\n";
+        for (literal lit : m_trail) {
+            out << dimacs_lit(lit) << " 0\n";
+        }
+//        unsigned l_idx = 0;
+//        for (auto const& wlist : m_watches) {
+//            literal l = ~to_literal(l_idx++);
+//            for (auto const& w : wlist) {
+//                if (w.is_binary_clause() && l.index() < w.get_literal().index())
+//                    out << dimacs_lit(l) << " " << dimacs_lit(w.get_literal()) << " 0\n";
+//            }
+//        }
+        clause_vector const * vs[2] = { &m_clauses, &m_learned };
+
+        for (unsigned i = 0; i < 2; i++) {
+            clause_vector const & cs = *(vs[i]);
+            for (const auto& cp : cs) {
+                bool skip_clause = false;
+                for (const literal& l : *cp) {
+                    if (m_assignment[l.index()] == l_true) {
+                        skip_clause = true;
+                        break;
+                    }
+                }
+
+                if (skip_clause) {
+                    continue;
+                }
+
+                for (const literal& l : *cp) {
+                    out << dimacs_lit(l) << " ";
+                }
+                out << "0\n";
+            }
+        }
+        //TRACE("qq", tout << "Displayed clauses with elim vars: " << count_eliminated << " " << count_removed << "\n";);
+
+//         for (clause const* cp : m_clauses) {
+//            clause const & c = *cp;
+//            if (!c.satisfied_by(m)) {
+//                IF_VERBOSE(1, verbose_stream() << "failed clause " << c.id() << ": " << c << "\n";);
+//                TRACE("sat", tout << "failed: " << c << "\n";
+//                      tout << "assumptions: " << m_assumptions << "\n";
+//                      tout << "trail: " << m_trail << "\n";
+//                      tout << "model: " << m << "\n";
+//                      m_mc.display(tout);
+//                      );
+//                for (literal l : c) {
+//                    if (was_eliminated(l.var())) IF_VERBOSE(1, verbose_stream() << "eliminated: " << l << "\n";);
+//                }
+//                ok = false;
+//            }
+//        }
     }
 
     void solver::display_wcnf(std::ostream & out, unsigned sz, literal const* lits, unsigned const* weights) const {

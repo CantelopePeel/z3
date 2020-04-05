@@ -1431,11 +1431,19 @@ typedef enum
     Z3_GOAL_UNDER_OVER
 } Z3_goal_prec;
 
+typedef bool Z3_quantum_solver_check_callable(unsigned num_vars, unsigned num_clauses);
+typedef const char* Z3_quantum_solver_run_callable(const Z3_string solver_state);
+
+
 /*@}*/
 
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
+
+    void Z3_API Z3_set_quantum_solver_check_capable_callback(Z3_quantum_solver_check_callable);
+
+    void Z3_API Z3_set_quantum_solver_run_callback(Z3_quantum_solver_run_callable);
 
     /** @name Global Parameters */
 

@@ -167,6 +167,7 @@ public:
     }
 
     lbool check_sat_core(unsigned sz, expr * const * assumptions) override {
+        TRACE("qq", tout << "HELLO" << "\n"; tout.flush(););
         m_solver.pop_to_base_level();
         m_core.reset();
         if (m_solver.inconsistent()) return l_false;

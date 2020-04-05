@@ -151,6 +151,14 @@ extern "C" {
             init_solver_core(c, s);
     }
 
+    void Z3_API Z3_set_quantum_solver_check_capable_callback(Z3_quantum_solver_check_callable callable) {
+        quantum_solver_check_capable_callback = callable;
+    }
+
+    void Z3_API Z3_set_quantum_solver_run_callback(Z3_quantum_solver_run_callable callable) {
+        quantum_solver_run_callback = callable;
+    }
+
     Z3_solver Z3_API Z3_mk_simple_solver(Z3_context c) {
         Z3_TRY;
         LOG_Z3_mk_simple_solver(c);
